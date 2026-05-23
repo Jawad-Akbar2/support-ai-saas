@@ -1,0 +1,519 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// USERS & AUTHENTICATION
+// ============================================================================
+
+model User {
+  id                    String                 @id @default(cuid())
+  email                 String                 @unique
+  name                  String?
+  passwordHash          String
+  emailVerified         DateTime?
+  image                 String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  
+  // Relations
+  memberships           Membership[]
+  invitations           Invitation[]
+  auditLogs             AuditLog[]
+  chatSessions          ChatSession[]
+  feedback              Feedback[]
+  
+  @@index([email])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// COMPANIES (TENANTS)
+// ============================================================================
+
+model Company {
+  id                    String                 @id @default(cuid())
+  name                  String
+  slug                  String                 @unique
+  logo                  String?
+  description           String?
+  website               String?
+  status                CompanyStatus          @default(ACTIVE) // active, suspended, trial, cancelled
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  deletedAt             DateTime?
+  
+  // Relations
+  memberships           Membership[]
+  subscription          CompanySubscription?
+  documents             Document[]
+  chatSessions          ChatSession[]
+  auditLogs             AuditLog[]
+  usageLogs             UsageLog[]
+  settings              CompanySettings?
+  aiSettings            AISettings?
+  unansweredQuestions   UnansweredQuestion[]
+  invitations           Invitation[]
+  
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum CompanyStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+// ============================================================================
+// ROLES & PERMISSIONS
+// ============================================================================
+
+model Role {
+  id                    String                 @id @default(cuid())
+  name                  String
+  description           String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  
+  // Relations
+  memberships           Membership[]
+  permissions           RolePermission[]
+  
+  @@unique([name])
+}
+
+model Permission {
+  id                    String                 @id @default(cuid())
+  name                  String
+  description           String?
+  createdAt             DateTime               @default(now())
+  
+  // Relations
+  roles                 RolePermission[]
+  
+  @@unique([name])
+}
+
+model RolePermission {
+  id                    String                 @id @default(cuid())
+  roleId                String
+  permissionId          String
+  createdAt             DateTime               @default(now())
+  
+  role                  Role                   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission            Permission             @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+}
+
+// ============================================================================
+// MEMBERSHIP (User in Company with Role)
+// ============================================================================
+
+model Membership {
+  id                    String                 @id @default(cuid())
+  userId                String
+  companyId             String
+  roleId                String
+  status                MembershipStatus       @default(ACTIVE) // active, suspended, removed
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role                  Role                   @relation(fields: [roleId], references: [id])
+  
+  @@unique([userId, companyId])
+  @@index([userId])
+  @@index([companyId])
+  @@index([roleId])
+  @@index([status])
+}
+
+enum MembershipStatus {
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+// ============================================================================
+// INVITATIONS
+// ============================================================================
+
+model Invitation {
+  id                    String                 @id @default(cuid())
+  email                 String
+  companyId             String
+  roleId                String
+  token                 String                 @unique
+  expiresAt             DateTime
+  status                InvitationStatus       @default(PENDING) // pending, accepted, expired
+  createdAt             DateTime               @default(now())
+  createdBy             String
+  
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdByUser         User                   @relation(fields: [createdBy], references: [id])
+  
+  @@index([email])
+  @@index([companyId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+}
+
+// ============================================================================
+// SUBSCRIPTIONS & PLANS
+// ============================================================================
+
+model Plan {
+  id                    String                 @id @default(cuid())
+  name                  String                 @unique
+  description           String?
+  monthlyPrice          Int                    @default(0) // in cents
+  yearlyPrice           Int?                   @default(0)
+  tier                  PlanTier
+  status                PlanStatus             @default(ACTIVE)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  
+  // Relations
+  features              PlanFeature[]
+  subscriptions         CompanySubscription[]
+  
+  @@index([tier])
+}
+
+enum PlanTier {
+  FREE
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum PlanStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model PlanFeature {
+  id                    String                 @id @default(cuid())
+  planId                String
+  featureName           String
+  featureKey            String                 // e.g., "AI_CHAT", "DOCUMENT_UPLOAD", "ANALYTICS"
+  enabled               Boolean                @default(true)
+  limit                 Int?                   // e.g., document count, storage, monthly questions
+  description           String?
+  createdAt             DateTime               @default(now())
+  
+  plan                  Plan                   @relation(fields: [planId], references: [id], onDelete: Cascade)
+  
+  @@unique([planId, featureKey])
+  @@index([planId])
+}
+
+model CompanySubscription {
+  id                    String                 @id @default(cuid())
+  companyId             String                 @unique
+  planId                String
+  status                SubscriptionStatus     @default(ACTIVE) // active, expired, cancelled, suspended
+  currentPeriodStart    DateTime
+  currentPeriodEnd      DateTime
+  cancelledAt           DateTime?
+  cancelledBy           String?                // user id who cancelled
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  plan                  Plan                   @relation(fields: [planId], references: [id])
+  
+  @@index([planId])
+  @@index([status])
+  @@index([currentPeriodEnd])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+  SUSPENDED
+}
+
+// ============================================================================
+// DOCUMENTS & KNOWLEDGE BASE
+// ============================================================================
+
+model Document {
+  id                    String                 @id @default(cuid())
+  companyId             String
+  title                 String
+  description           String?
+  fileName              String
+  fileSize              Int
+  fileType              String                 // "pdf", "txt", etc.
+  filePath              String                 // Local storage path
+  status                DocumentStatus         @default(UPLOADED) // uploaded, processing, completed, failed, archived
+  processingError       String?                // Error message if processing failed
+  totalChunks           Int                    @default(0)
+  category              String?                // e.g., "FAQ", "SOP", "Policy"
+  tags                  String[]               @default([]) // JSON array of tags
+  uploadedBy            String
+  processedAt           DateTime?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  deletedAt             DateTime?
+  
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  chunks                DocumentChunk[]
+  processingJobs        ProcessingJob[]
+  
+  @@index([companyId])
+  @@index([status])
+  @@index([category])
+  @@index([createdAt])
+  @@index([deletedAt])
+}
+
+enum DocumentStatus {
+  UPLOADED
+  PROCESSING
+  COMPLETED
+  FAILED
+  ARCHIVED
+}
+
+model DocumentChunk {
+  id                    String                 @id @default(cuid())
+  documentId            String
+  companyId             String
+  content               String                 // Actual text chunk
+  embedding             Vector(1536)?          // Using pgvector for embeddings
+  chunkIndex            Int                    // Order of chunk in document
+  tokenCount            Int                    @default(0) // Approximate token count
+  createdAt             DateTime               @default(now())
+  
+  document              Document               @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  @@index([documentId])
+  @@index([companyId])
+  @@index([embedding])
+}
+
+model ProcessingJob {
+  id                    String                 @id @default(cuid())
+  documentId            String
+  companyId             String
+  status                ProcessingJobStatus    @default(PENDING) // pending, processing, completed, failed
+  error                 String?
+  startedAt             DateTime?
+ n  completedAt           DateTime?
+  createdAt             DateTime               @default(now())
+  
+  document              Document               @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  
+  @@index([documentId])
+  @@index([companyId])
+  @@index([status])
+}
+
+enum ProcessingJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ============================================================================
+// CHAT & CONVERSATIONS
+// ============================================================================
+
+model ChatSession {
+  id                    String                 @id @default(cuid())
+  companyId             String
+  userId                String
+  title                 String?
+  status                ChatSessionStatus      @default(ACTIVE) // active, archived
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages              ChatMessage[]
+  
+  @@index([companyId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+enum ChatSessionStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model ChatMessage {
+  id                    String                 @id @default(cuid())
+  sessionId             String
+  role                  ChatMessageRole        @default(USER) // user, assistant
+  content               String
+  tokensUsed            Int                    @default(0) // For usage tracking
+  createdAt             DateTime               @default(now())
+  
+  session               ChatSession            @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sources               ChatMessageSource[]
+  feedback              Feedback?
+  
+  @@index([sessionId])
+  @@index([role])
+}
+
+enum ChatMessageRole {
+  USER
+  ASSISTANT
+}
+
+model ChatMessageSource {
+  id                    String                 @id @default(cuid())
+  messageId             String
+  chunkId               String
+  similarity            Float                  // 0.0 to 1.0 similarity score
+  createdAt             DateTime               @default(now())
+  
+  message               ChatMessage            @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  
+  @@index([messageId])
+  @@index([chunkId])
+}
+
+// ============================================================================
+// FEEDBACK & QUALITY TRACKING
+// ============================================================================
+
+model Feedback {
+  id                    String                 @id @default(cuid())
+  messageId             String                 @unique
+  userId                String
+  useful                Boolean?               // true=useful, false=not useful, null=no feedback
+  comment               String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  
+  message               ChatMessage            @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user                  User                   @relation(fields: [userId], references: [id])
+  
+  @@index([userId])
+  @@index([useful])
+}
+
+// ============================================================================
+// UNANSWERED QUESTIONS
+// ============================================================================
+
+model UnansweredQuestion {
+  id                    String                 @id @default(cuid())
+  companyId             String
+  question              String
+  context               String?                // Additional context from user
+  confidence            Float?                 // Low confidence score that triggered this
+  createdAt             DateTime               @default(now())
+  
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  @@index([companyId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// AUDIT LOGS
+// ============================================================================
+
+model AuditLog {
+  id                    String                 @id @default(cuid())
+  companyId             String
+  userId                String
+  action                String                 // e.g., "DOCUMENT_UPLOADED", "ROLE_CHANGED", "USER_INVITED"
+  entityType            String                 // e.g., "Document", "User", "Company"
+  entityId              String?                // ID of affected entity
+  oldValue              String?                // JSON string of old data
+  newValue              String?                // JSON string of new data
+  details               String?                // Additional details
+  ipAddress             String?
+  userAgent             String?
+  createdAt             DateTime               @default(now())
+  
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  @@index([companyId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// USAGE LOGS (for analytics & billing)
+// ============================================================================
+
+model UsageLog {
+  id                    String                 @id @default(cuid())
+  companyId             String
+  userId                String?
+  metricType            String                 // e.g., "QUESTIONS_ASKED", "DOCUMENTS_PROCESSED", "STORAGE_USED"
+  value                 Int                    // Count or bytes
+  metadata              String?                // JSON for additional context
+  createdAt             DateTime               @default(now())
+  
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  @@index([companyId])
+  @@index([metricType])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// SETTINGS
+// ============================================================================
+
+model CompanySettings {
+  id                    String                 @id @default(cuid())
+  companyId             String                 @unique
+  enableAnalytics       Boolean                @default(true)
+  enableAuditLogs       Boolean                @default(true)
+  enableCustomBranding  Boolean                @default(false)
+  maxDocuments          Int                    @default(50)
+  maxStorageMB          Int                    @default(1024)
+  maxMonthlyQuestions   Int                    @default(10000)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model AISettings {
+  id                    String                 @id @default(cuid())
+  companyId             String                 @unique
+  model                 String                 @default("llama3.1")
+  temperature           Float                  @default(0.7) // 0.0 to 1.0
+  maxTokens             Int                    @default(500)
+  systemPrompt          String                 @default("")
+  includeSourceCitations Boolean               @default(true)
+  confidenceThreshold   Float                  @default(0.5)
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
